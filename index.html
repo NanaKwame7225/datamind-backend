@@ -1701,105 +1701,205 @@ function resetDash() {
   document.getElementById('fpill').style.display = 'none';
 }
 
+// ── SHARED API HELPER ─────────────────────────────────────────────────────
+async function apiPost(endpoint, body) {
+  const r = await fetch(getUrl() + endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+function addThinking(containerId, label) {
+  const m = document.getElementById(containerId);
+  const id = 'thinking_' + Date.now();
+  m.innerHTML += `<div class="audit-msg result" id="${id}">
+    <div class="audit-msg-label">${label}</div>
+    <div style="display:flex;align-items:center;gap:8px;color:var(--text2)">
+      <div class="spin"></div> Analysing with AI…
+    </div>
+  </div>`;
+  m.lastElementChild.scrollIntoView({ behavior: 'smooth' });
+  return id;
+}
+
+function replaceThinking(id, label, text, cls) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.className = 'audit-msg ' + cls;
+    el.innerHTML = `<div class="audit-msg-label">${label}</div>${text}`;
+    el.scrollIntoView({ behavior: 'smooth' });
+  }
+}
+
 // ── AUDIT CHAT ────────────────────────────────────────────────────────────
 function auditAdd(label, text, cls='result') {
   const m = document.getElementById('auditMessages');
   m.innerHTML += `<div class="audit-msg ${cls}"><div class="audit-msg-label">${label}</div>${text}</div>`;
   m.lastElementChild.scrollIntoView({behavior:'smooth'});
 }
-function auditSend() {
+
+async function auditSend() {
   const inp = document.getElementById('auditInp'), msg = inp.value.trim();
   if (!msg) return;
-  auditAdd('Your Query', msg, 'query'); inp.value='';
-  setTimeout(() => auditAdd('AI Analysis', auditInterpret(msg), 'insight'), 600);
+  auditAdd('Your Query', msg, 'query');
+  inp.value = '';
+  const tid = addThinking('auditMessages', 'Audit AI');
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/audit/chat', {
+      message: msg, tool: null,
+      data: data.slice(0, 50),
+      industry, context: msg, history: [],
+    });
+    replaceThinking(tid, 'Audit AI — ' + (res.provider || 'AI'), res.response || 'Analysis complete.', 'insight');
+  } catch(e) {
+    replaceThinking(tid, 'Audit AI', 'Connection error — ' + e.message, 'error');
+  }
 }
-function auditRun(tool) {
-  const responses = {
-    benford: "BENFORD'S LAW ANALYSIS\n\nAnalysing leading digit distribution against expected frequencies...\n\nResult: Deviation detected in digits 3, 7, and 9. Chi-square value of 18.4 exceeds the critical threshold of 15.5 at 95% confidence. This pattern warrants focused testing on transactions in the GHS 1,000–9,999 range.\n\nACCA Recommendation: Perform targeted transaction testing on flagged digit ranges per ISA 240.",
-    ratios:  "FINANCIAL RATIO ANALYSIS\n\nCurrent Ratio: 1.82 (Industry avg: 2.1) — Below benchmark\nQuick Ratio: 1.24 — Acceptable\nDebt-to-Equity: 0.68 — Healthy\nROA: 6.3% — Good\nOperating Margin: 22.1% — Strong\n\nFinding: Liquidity is slightly below sector benchmarks. Monitor current liabilities in Q3–Q4.",
-    trend:   "TREND ANALYSIS\n\nPeriod-over-period growth: +14.2% YoY\nSeasonality detected: Q4 consistently 23% above Q2 average\nAnomaly: August revenue spike (6.8× normal) — requires explanation\nForecast (90-day): +8–12% with 85% confidence interval\n\nRecommendation: Investigate August outlier. Align cost planning with seasonal patterns.",
-    invoice: "INVOICE OCR\n\nUpload your invoice file using the data upload zone to begin extraction.\n\nSupported formats: PDF · PNG · JPEG\nFields extracted: Invoice # · Date · Vendor · Amount · VAT · Line items",
-    receipt: "RECEIPT MATCHING\n\nThis module compares purchase orders against receipts to identify:\n• Unmatched items\n• Quantity discrepancies\n• Price variances beyond tolerance\n\nUpload your data to begin.",
-    report:  "AUDIT REPORT GENERATION\n\nGenerating structured audit report...\n\nSections:\n1. Executive Summary\n2. Scope and Objectives\n3. Methodology (ISA compliant)\n4. Key Findings\n5. Risk Assessment Matrix\n6. Recommendations\n7. Management Response\n\nConnect your API keys and upload data for full AI-generated output.",
-    explain: "AI EXPLANATION MODE\n\nI will explain audit results in plain language following ACCA and IFRS standards.\n\nRun any analysis above and I will provide a plain-language interpretation suitable for management reporting.",
-  };
-  auditAdd('Tool: '+tool.toUpperCase(), responses[tool]||'Tool executed.', 'result');
-}
-function auditInterpret(msg) {
-  const m = msg.toLowerCase();
-  if (m.includes('benford')||m.includes('digit')) return "Benford's Law checks whether leading digits follow the expected logarithmic distribution. Significant deviation may indicate data manipulation or error. Run the Benford Analysis tool on your transaction data for a full assessment.";
-  if (m.includes('fraud')||m.includes('suspicious')) return "Fraud risk indicators include unusual transaction timing, round-number clustering, duplicate amounts, and vendors with incomplete registration. Use the Fraud Detection tool to scan your data systematically.";
-  if (m.includes('ratio')||m.includes('liquidity')) return "Financial ratios give a structured view of business health. Key ratios include liquidity (current, quick), profitability (ROA, operating margin), and leverage (debt-to-equity). The Ratio Analysis tool provides a full benchmark assessment.";
-  return "Audit AI is ready to analyse. Specify the type of analysis you need — Benford, ratio, trend, or fraud — along with your dataset details for the most accurate response.";
+
+async function auditRun(tool) {
+  const tid = addThinking('auditMessages', 'Tool: ' + tool.toUpperCase());
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/audit/chat', {
+      message: 'Run ' + tool + ' analysis',
+      tool, data: data.slice(0, 50),
+      industry, context: '', history: [],
+    });
+    let output = res.response || '';
+    if (res.tool_data && Object.keys(res.tool_data).length) {
+      const td = res.tool_data;
+      if (td.benford) {
+        output += `\n\nBenford Results — Chi²: ${td.benford.chi2} | p-value: ${td.benford.p_value} | Sample: ${td.benford.sample_size} | ${td.benford.suspicious ? '⚠ SUSPICIOUS' : '✓ Normal'}`;
+      }
+      if (td.ratios) {
+        output += '\n\nRatios: ' + Object.entries(td.ratios).map(([k,v]) => k.replace(/_/g,' ') + ': ' + v).join(' · ');
+      }
+    }
+    replaceThinking(tid, 'Tool: ' + tool.toUpperCase() + ' — ' + (res.provider || 'AI'), output, 'result');
+  } catch(e) {
+    replaceThinking(tid, 'Tool: ' + tool.toUpperCase(), 'Error: ' + e.message, 'error');
+  }
 }
 
 // ── FRAUD CHAT ────────────────────────────────────────────────────────────
-function fraudSend() {
+async function fraudSend() {
   const inp = document.getElementById('fraudInp'), msg = inp.value.trim();
   if (!msg) return;
   const m = document.getElementById('fraudMessages');
   m.innerHTML += `<div class="audit-msg query"><div class="audit-msg-label">Query</div>${msg}</div>`;
   inp.value = '';
-  const r = 'Fraud Analysis: '+msg.substring(0,40)+'...\n\nPattern assessment complete. Running velocity checks, duplicate detection, and Benford analysis on described dataset. Key risk indicators have been logged for auditor review.\n\nRecommendation: Escalate to ISA 240 procedures if statistical thresholds are breached.';
-  setTimeout(() => { m.innerHTML += `<div class="audit-msg insight"><div class="audit-msg-label">Fraud AI</div>${r}</div>`; m.lastElementChild.scrollIntoView({behavior:'smooth'}); }, 600);
+  const tid = addThinking('fraudMessages', 'Fraud AI');
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/fraud/analyse', {
+      message: msg, tool: null,
+      data: data.slice(0, 50),
+      industry, context: msg, history: [],
+    });
+    const riskBadge = res.risk_level
+      ? `\n\nRisk Score: ${res.risk_score}/100 — ${res.risk_level}`
+      : '';
+    replaceThinking(tid, 'Fraud AI — ' + (res.provider || 'AI'), (res.response || '') + riskBadge, 'insight');
+  } catch(e) {
+    replaceThinking(tid, 'Fraud AI', 'Error: ' + e.message, 'error');
+  }
 }
-function fraudRun(tool) {
-  const r = {
-    detect:    'FRAUD DETECTION SCAN\n\nML risk score: 73/100\nTop flags: Round-number clustering · Off-hours approvals · Vendor concentration\nAction: Detailed sampling recommended per ISA 240.',
-    pattern:   'PATTERN ANALYSIS\n\nUnusual patterns detected:\n• 23% of transactions occur between 18:00–22:00\n• 4 vendors account for 61% of spend\n• 3 consecutive threshold-limit transactions\nRisk: HIGH',
-    velocity:  'VELOCITY CHECK\n\nTransactions per day: avg 18, spike to 142 on Mar 15\nSame-day duplicates: 7 instances\nCard-not-present ratio: 34% (above 20% threshold)\nAction: Investigate March 15 spike',
-    duplicate: 'DUPLICATE INVOICE DETECTION\n\nScanned: 1,245 invoices\nExact duplicates: 3\nSimilar amounts (±2%): 8 pairs\nSame vendor + amount + different dates: 5\nTotal duplicate exposure: GHS 48,200',
-    ghost:     'GHOST VENDOR ANALYSIS\n\nVendors reviewed: 312\nNo physical address: 14\nRegistered after contract signed: 6\nSingle point of contact only: 22\nHigh-risk vendors: 8 — recommend due diligence review',
-    benford:   "BENFORD'S LAW — FRAUD SCREEN\n\nLeading digit deviation detected\nChi-square: 22.7 (threshold: 15.5)\nMost deviant digits: 4, 8\nLikely manipulation in mid-range transactions\nAction: Target sample GHS 4,000–8,999 range",
-  };
-  const m = document.getElementById('fraudMessages');
-  m.innerHTML += `<div class="audit-msg result"><div class="audit-msg-label">Fraud Tool: ${tool.toUpperCase()}</div>${r[tool]||'Analysis complete.'}</div>`;
-  m.lastElementChild.scrollIntoView({behavior:'smooth'});
+
+async function fraudRun(tool) {
+  const tid = addThinking('fraudMessages', 'Fraud Tool: ' + tool.toUpperCase());
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/fraud/analyse', {
+      message: 'Run ' + tool + ' analysis',
+      tool, data: data.slice(0, 50),
+      industry, context: '', history: [],
+    });
+    let output = res.response || '';
+    const fd = res.fraud_data || {};
+    if (fd.risk_score !== undefined) {
+      output += `\n\n📊 Risk Score: ${fd.risk_score}/100 — ${fd.risk_level}`;
+    }
+    if (fd.benford) {
+      output += `\nBenford Chi²: ${fd.benford.chi2} — ${fd.benford.suspicious ? '⚠ Suspicious' : '✓ Normal'}`;
+    }
+    if (fd.duplicates !== undefined) {
+      output += `\nDuplicates detected: ${fd.duplicates}`;
+    }
+    if (fd.round_number_clustering) {
+      output += `\nRound-number clustering: ${fd.round_number_clustering.pct}% — ${fd.round_number_clustering.flagged ? '⚠ Flagged' : '✓ Normal'}`;
+    }
+    replaceThinking(tid, 'Fraud Tool: ' + tool.toUpperCase() + ' — ' + (res.provider || 'AI'), output, 'result');
+  } catch(e) {
+    replaceThinking(tid, 'Fraud Tool: ' + tool.toUpperCase(), 'Error: ' + e.message, 'error');
+  }
 }
 
 // ── TAX CHAT ─────────────────────────────────────────────────────────────
-function taxSend() {
+async function taxSend() {
   const inp = document.getElementById('taxInp'), msg = inp.value.trim();
   if (!msg) return;
   const m = document.getElementById('taxMessages');
   m.innerHTML += `<div class="audit-msg query"><div class="audit-msg-label">Query</div>${msg}</div>`;
   inp.value = '';
-  const r = 'Tax Analysis: Processing "'+msg.substring(0,40)+'..."\n\nGhana Revenue Authority framework applied. Key considerations:\n1. Applicable withholding tax rates reviewed\n2. VAT registration threshold checked\n3. Transfer pricing documentation requirements noted\n\nFull computation requires structured data input.';
-  setTimeout(() => { m.innerHTML += `<div class="audit-msg insight"><div class="audit-msg-label">Tax AI</div>${r}</div>`; m.lastElementChild.scrollIntoView({behavior:'smooth'}); }, 600);
+  const tid = addThinking('taxMessages', 'Tax AI');
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/tax/compute', {
+      message: msg, tool: null,
+      data: data.slice(0, 50),
+      industry, context: msg, history: [],
+    });
+    replaceThinking(tid, 'Tax AI — ' + (res.provider || 'AI'), res.response || 'Computation complete.', 'insight');
+  } catch(e) {
+    replaceThinking(tid, 'Tax AI', 'Error: ' + e.message, 'error');
+  }
 }
-function taxRun(tool) {
-  const r = {
-    vat:         'VAT RECONCILIATION\n\nOutput VAT: GHS 182,400\nInput VAT: GHS 124,800\nNet VAT payable: GHS 57,600\nLast filing: On time\nCompliance score: 94%\nNote: 3 invoices missing TIN — correct before next filing',
-    withholding: 'WITHHOLDING TAX\n\nTotal payments subject to WHT: GHS 890,000\nWHT deducted: GHS 44,500 (5%)\nWHT remitted: GHS 44,500\nCertificates issued: 28 of 31 — 3 outstanding\nAction: Issue remaining WHT certificates within 7 days',
-    corporate:   'CORPORATE TAX ESTIMATE\n\nChargeable income: GHS 2,340,000\nCapital allowances: GHS 180,000\nAdjusted profit: GHS 2,160,000\nCorporate tax @ 25%: GHS 540,000\nQuarterly installments: GHS 135,000 each\nNext due: Q3 — 60 days',
-    transfer:    "TRANSFER PRICING REVIEW\n\nRelated party transactions: GHS 4.2M\nArm's length benchmark: GHS 3.9M — 7.7% variance\nDocumentation status: Partially complete\nRisk level: MEDIUM\nAction: Prepare TP documentation per GRA guidelines before year-end",
-    compliance:  'TAX COMPLIANCE DASHBOARD\n\nCorporate tax: ✓ Filed & paid\nVAT: ✓ Filed — minor adjustments needed\nPAYE: ✓ Current\nWHT: ⚠ 3 certificates outstanding\nCapital gains: ✓ N/A this period\nOverall compliance score: 91% — Good standing',
-  };
-  const m = document.getElementById('taxMessages');
-  m.innerHTML += `<div class="audit-msg result"><div class="audit-msg-label">Tax Module: ${tool.toUpperCase()}</div>${r[tool]||'Computed.'}</div>`;
-  m.lastElementChild.scrollIntoView({behavior:'smooth'});
+
+async function taxRun(tool) {
+  const tid = addThinking('taxMessages', 'Tax Module: ' + tool.toUpperCase());
+  try {
+    const data = uploadedData || SAMPLES[industry] || [];
+    const res  = await apiPost('/api/v1/tax/compute', {
+      message: 'Compute ' + tool,
+      tool, data: data.slice(0, 50),
+      industry, context: '', history: [],
+    });
+    let output = res.response || '';
+    const td = res.tax_data || {};
+    if (td.corporate_tax) {
+      const ct = td.corporate_tax;
+      output += `\n\n📋 Corporate Tax Summary\nChargeable Income: GHS ${(ct.chargeable_income||0).toLocaleString()}\nTax Liability (25%): GHS ${(ct.tax_liability||0).toLocaleString()}\nQuarterly Payment: GHS ${(ct.quarterly_payment||0).toLocaleString()}`;
+    }
+    if (td.vat) {
+      const v = td.vat;
+      output += `\n\n🧾 VAT Summary\nOutput VAT: GHS ${(v.output_vat||0).toLocaleString()}\nInput VAT: GHS ${(v.input_vat||0).toLocaleString()}\nNet Payable: GHS ${(v.net_payable||0).toLocaleString()}`;
+    }
+    replaceThinking(tid, 'Tax Module: ' + tool.toUpperCase() + ' — ' + (res.provider || 'AI'), output, 'result');
+  } catch(e) {
+    replaceThinking(tid, 'Tax Module: ' + tool.toUpperCase(), 'Error: ' + e.message, 'error');
+  }
 }
 
 // ── AI EXPLAIN ────────────────────────────────────────────────────────────
-function aiSend() {
+async function aiSend() {
   const inp = document.getElementById('aiInp'), msg = inp.value.trim();
   if (!msg) return;
   const m = document.getElementById('aiMessages');
   m.innerHTML += `<div class="audit-msg query"><div class="audit-msg-label">Your Question</div>${msg}</div>`;
   inp.value = '';
-  setTimeout(() => {
-    m.innerHTML += `<div class="audit-msg insight"><div class="audit-msg-label">AI Explanation — ACCA/IFRS Framework</div>${generateExplanation(msg)}</div>`;
-    m.lastElementChild.scrollIntoView({behavior:'smooth'});
-  }, 700);
-}
-function generateExplanation(msg) {
-  const m = msg.toLowerCase();
-  if (m.includes('benford')) return "BENFORD'S LAW EXPLAINED\n\nBenford's Law states that in naturally occurring datasets, the digit 1 appears as the leading digit roughly 30% of the time, digit 2 about 18%, and so on — decreasing logarithmically. In auditing, manufactured or manipulated numbers often deviate from this pattern, making Benford analysis a powerful first-pass fraud screening tool.\n\nLimitations: Works best on large datasets (500+ transactions). Not reliable for datasets with assigned numbers such as sequential invoice IDs.";
-  if (m.includes('going concern')) return "GOING CONCERN (ISA 570)\n\nA going concern qualification indicates the auditor has substantial doubt about whether a business can continue operating for the next 12 months. Common triggers include recurring losses, negative cash flows, inability to service debt, or loss of key customers.\n\nAuditor's duty: Evaluate management's assessment, review cash flow projections, and consider whether disclosures are adequate under IAS 1.";
-  if (m.includes('dso')||m.includes('days sales')) return "DAYS SALES OUTSTANDING (DSO)\n\nDSO measures how long it takes to collect payment after a sale.\n\nFormula: DSO = (Accounts Receivable ÷ Total Revenue) × Number of Days\n\nExample: AR of GHS 500,000 with monthly revenue of GHS 2,000,000 gives DSO of 7.5 days. Rising DSO signals collection problems or relaxed credit terms — a key audit flag.";
-  if (m.includes('ifrs 9')||m.includes('ias 39')) return "IFRS 9 vs IAS 39\n\nIAS 39 used an incurred loss model — provisions only when loss evidence existed. IFRS 9 uses the expected credit loss (ECL) model — provisions are required even before default occurs, based on forward-looking information.\n\nImpact: IFRS 9 typically results in larger, earlier provisions — improving financial stability signalling but reducing reported profits in the short term.";
-  if (m.includes('gra')||m.includes('withholding')) return "GRA WITHHOLDING TAX (GHANA)\n\nThe Ghana Revenue Authority requires withholding at source on specified payments. Key rates: 8% on rent, 10% on technical services, 5% on contracts, 20% on management fees to non-residents.\n\nCompliance: Withheld amounts must be remitted to GRA within 15 days of the end of the month. WHT certificates must be issued to payees within 30 days.";
-  return 'EXPLANATION\n\nYour question about "'+msg.substring(0,50)+'..." falls within the scope of financial reporting and audit standards. Relevant frameworks include IFRS/IAS for financial reporting, ISA standards for audit procedures, and ACCA professional guidelines.\n\nFor a detailed explanation specific to your context, please provide more detail about the transaction type, industry, or specific standard you are referencing.';
+  const tid = addThinking('aiMessages', 'AI Explanation');
+  try {
+    const res = await apiPost('/api/v1/explain', {
+      message: msg, industry, context: msg, history: [],
+    });
+    replaceThinking(tid, 'AI Explanation — ACCA/IFRS/GRA — ' + (res.provider || 'AI'), res.response || 'Explanation complete.', 'insight');
+  } catch(e) {
+    replaceThinking(tid, 'AI Explanation', 'Error: ' + e.message, 'error');
+  }
 }
 
 // ── OVERLAY ───────────────────────────────────────────────────────────────
