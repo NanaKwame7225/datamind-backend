@@ -47,11 +47,16 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
+MISTRAL_API_KEY   = os.getenv("MISTRAL_API_KEY", "")
 ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-5")
 OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+MISTRAL_MODEL     = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
 
 # ── Base Schemas ───────────────────────────────────────────────────────────
 class DataRequest(BaseModel):
@@ -337,7 +342,10 @@ AE = AnalyticsEngine()
 # ══════════════════════════════════════════════════════════════════════════
 
 async def call_ai(system_prompt: str, user_message: str, expect_json: bool = True) -> str:
-    """Call Claude → Gemini → OpenAI in cascade. Statistical is last resort."""
+    """
+    6-engine AI cascade:
+    Claude → Gemini → Groq → Mistral → OpenAI → Statistical (offline only)
+    """
 
     # 1. Claude
     if ANTHROPIC_API_KEY:
@@ -350,9 +358,9 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                           "messages": [{"role": "user", "content": user_message}]},
                 )
             if resp.status_code == 200:
-                log.info("Claude responded successfully")
+                log.info("✓ Claude responded")
                 return resp.json()["content"][0]["text"].strip()
-            log.warning("Claude HTTP %s — trying Gemini", resp.status_code)
+            log.warning("Claude %s — trying Gemini", resp.status_code)
         except Exception as e:
             log.warning("Claude error: %s — trying Gemini", e)
 
@@ -360,10 +368,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
     if GEMINI_API_KEY:
         try:
             combined = f"{system_prompt}\n\n{user_message}"
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-            )
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
                     url,
@@ -371,13 +376,51 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                           "generationConfig": {"maxOutputTokens": 2500}},
                 )
             if resp.status_code == 200:
-                log.info("Gemini responded successfully")
+                log.info("✓ Gemini responded")
                 return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            log.warning("Gemini HTTP %s — trying OpenAI", resp.status_code)
+            log.warning("Gemini %s — trying Groq", resp.status_code)
         except Exception as e:
-            log.warning("Gemini error: %s — trying OpenAI", e)
+            log.warning("Gemini error: %s — trying Groq", e)
 
-    # 3. OpenAI
+    # 3. Groq (LLaMA 3.3 70B — fastest free API)
+    if GROQ_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": GROQ_MODEL, "max_tokens": 2500, "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_message},
+                    ]},
+                )
+            if resp.status_code == 200:
+                log.info("✓ Groq responded")
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            log.warning("Groq %s — trying Mistral", resp.status_code)
+        except Exception as e:
+            log.warning("Groq error: %s — trying Mistral", e)
+
+    # 4. Mistral
+    if MISTRAL_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    "https://api.mistral.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": MISTRAL_MODEL, "max_tokens": 2500, "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_message},
+                    ]},
+                )
+            if resp.status_code == 200:
+                log.info("✓ Mistral responded")
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            log.warning("Mistral %s — trying OpenAI", resp.status_code)
+        except Exception as e:
+            log.warning("Mistral error: %s — trying OpenAI", e)
+
+    # 5. OpenAI
     if OPENAI_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -390,13 +433,13 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                     ]},
                 )
             if resp.status_code == 200:
-                log.info("OpenAI responded successfully")
+                log.info("✓ OpenAI responded")
                 return resp.json()["choices"][0]["message"]["content"].strip()
-            log.warning("OpenAI HTTP %s — falling back to statistical", resp.status_code)
+            log.warning("OpenAI %s — falling back to statistical", resp.status_code)
         except Exception as e:
             log.warning("OpenAI error: %s — falling back to statistical", e)
 
-    # 4. Statistical — only if ALL AI engines fail
+    # 6. Statistical — only if ALL 5 AI engines fail
     log.warning("All AI engines failed — using statistical fallback")
     return ""
 
@@ -415,12 +458,11 @@ def clean_json(raw: str) -> dict:
 
 def detect_provider() -> str:
     """Returns the first available AI provider for labelling purposes."""
-    if ANTHROPIC_API_KEY:
-        return "anthropic"
-    if GEMINI_API_KEY:
-        return "gemini"
-    if OPENAI_API_KEY:
-        return "openai"
+    if ANTHROPIC_API_KEY: return "anthropic"
+    if GEMINI_API_KEY:    return "gemini"
+    if GROQ_API_KEY:      return "groq"
+    if MISTRAL_API_KEY:   return "mistral"
+    if OPENAI_API_KEY:    return "openai"
     return "statistical"
 
 
@@ -446,6 +488,8 @@ async def health():
         "engines":   {
             "claude":      bool(ANTHROPIC_API_KEY),
             "gemini":      bool(GEMINI_API_KEY),
+            "groq":        bool(GROQ_API_KEY),
+            "mistral":     bool(MISTRAL_API_KEY),
             "openai":      bool(OPENAI_API_KEY),
             "statistical": True,
             "pandas":      True,
@@ -453,7 +497,7 @@ async def health():
             "scipy":       True,
             "sklearn":     True,
         },
-        "cascade": "Claude → Gemini → OpenAI → Statistical",
+        "cascade": "Claude → Gemini → Groq → Mistral → OpenAI → Statistical",
     }
 
 # ── Serve frontend ─────────────────────────────────────────────────────────
