@@ -725,7 +725,7 @@ tr:hover td{background:rgba(255,255,255,.015)}
       <div>
         <div class="slabel">Industry Sector</div>
         <div class="ind-grid" id="indGrid">
-          <button class="ind-btn active" data-v="finance" onclick="selInd(this)"><div class="ind-icon">📈</div><span>Finance</span></button>
+          <button class="ind-btn" data-v="finance" onclick="selInd(this)"><div class="ind-icon">📈</div><span>Finance</span></button>
           <button class="ind-btn" data-v="education" onclick="selInd(this)"><div class="ind-icon">🎓</div><span>Education</span></button>
           <button class="ind-btn" data-v="supply_chain" onclick="selInd(this)"><div class="ind-icon">🚚</div><span>Supply</span></button>
           <button class="ind-btn" data-v="procurement" onclick="selInd(this)"><div class="ind-icon">🛒</div><span>Procurement</span></button>
@@ -736,7 +736,7 @@ tr:hover td{background:rgba(255,255,255,.015)}
           <button class="ind-btn" data-v="agriculture" onclick="selInd(this)"><div class="ind-icon">🌾</div><span>Agriculture</span></button>
           <button class="ind-btn" data-v="manufacturing" onclick="selInd(this)"><div class="ind-icon">🏭</div><span>Manufacture</span></button>
           <button class="ind-btn" data-v="ngo" onclick="selInd(this)"><div class="ind-icon">🌐</div><span>NGO</span></button>
-          <button class="ind-btn" data-v="general" onclick="selInd(this)"><div class="ind-icon">📦</div><span>General</span></button>
+          <button class="ind-btn active" data-v="general" onclick="selInd(this)"><div class="ind-icon">📦</div><span>General</span></button>
         </div>
       </div>
 
@@ -1133,7 +1133,7 @@ Examples:
 <script>
 // ── CONFIG ─────────────────────────────────────────────────────────────────
 const API_DEFAULT = ''  // same-origin: backend and frontend on same Railway service;
-let industry      = 'finance';
+let industry      = 'general';
 let uploadedData  = null;
 let isRunning     = false;
 let themePanelOpen= false;
