@@ -341,10 +341,11 @@ AE = AnalyticsEngine()
 # ── AI ENGINE (Claude → OpenAI → Statistical) ────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════
 
-async def call_ai(system_prompt: str, user_message: str, expect_json: bool = True) -> str:
+async def call_ai(system_prompt: str, user_message: str, expect_json: bool = True) -> tuple[str, str]:
     """
     6-engine AI cascade:
     Groq → Mistral → Gemini → Claude → OpenAI → Statistical (offline only)
+    Returns (response_text, provider_name)
     """
 
     # 1. Groq (LLaMA 3.3 70B — fastest free API, runs first)
@@ -361,7 +362,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                 )
             if resp.status_code == 200:
                 log.info("✓ Groq responded")
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                return resp.json()["choices"][0]["message"]["content"].strip(), "groq"
             log.warning("Groq %s — trying Mistral", resp.status_code)
         except Exception as e:
             log.warning("Groq error: %s — trying Mistral", e)
@@ -380,7 +381,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                 )
             if resp.status_code == 200:
                 log.info("✓ Mistral responded")
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                return resp.json()["choices"][0]["message"]["content"].strip(), "mistral"
             log.warning("Mistral %s — trying Gemini", resp.status_code)
         except Exception as e:
             log.warning("Mistral error: %s — trying Gemini", e)
@@ -398,7 +399,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                 )
             if resp.status_code == 200:
                 log.info("✓ Gemini responded")
-                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip(), "gemini"
             log.warning("Gemini %s — trying Claude", resp.status_code)
         except Exception as e:
             log.warning("Gemini error: %s — trying Claude", e)
@@ -415,7 +416,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                 )
             if resp.status_code == 200:
                 log.info("✓ Claude responded")
-                return resp.json()["content"][0]["text"].strip()
+                return resp.json()["content"][0]["text"].strip(), "anthropic"
             log.warning("Claude %s — trying OpenAI", resp.status_code)
         except Exception as e:
             log.warning("Claude error: %s — trying OpenAI", e)
@@ -434,14 +435,14 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                 )
             if resp.status_code == 200:
                 log.info("✓ OpenAI responded")
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                return resp.json()["choices"][0]["message"]["content"].strip(), "openai"
             log.warning("OpenAI %s — falling back to statistical", resp.status_code)
         except Exception as e:
             log.warning("OpenAI error: %s — falling back to statistical", e)
 
     # 6. Statistical — only if ALL 5 AI engines fail
     log.warning("All AI engines failed — using statistical fallback")
-    return ""
+    return "", "statistical"
 
 
 def clean_json(raw: str) -> dict:
@@ -457,6 +458,13 @@ def clean_json(raw: str) -> dict:
 
 
 def detect_provider() -> str:
+    """Returns the first available AI provider for labelling purposes."""
+    if GROQ_API_KEY:      return "groq"
+    if MISTRAL_API_KEY:   return "mistral"
+    if GEMINI_API_KEY:    return "gemini"
+    if ANTHROPIC_API_KEY: return "anthropic"
+    if OPENAI_API_KEY:    return "openai"
+    return "statistical"
     """Returns the first available AI provider for labelling purposes."""
     if GROQ_API_KEY:      return "groq"
     if MISTRAL_API_KEY:   return "mistral"
@@ -560,16 +568,18 @@ Forecasts: {json.dumps(forecasts)}
     user_msg = f"Query: {req.query}\nData sample: {json.dumps(req.inline_data[:8], default=str)}"
 
     t1    = time.time()
-    raw   = await call_ai(system_prompt, user_msg)
+    raw, actual_provider = await call_ai(system_prompt, user_msg)
     ai    = clean_json(raw)
     elapsed = (time.time() - t0) * 1000
-    provider = detect_provider()
+
+    model_map = {"groq": GROQ_MODEL, "mistral": MISTRAL_MODEL, "gemini": GEMINI_MODEL,
+                 "anthropic": ANTHROPIC_MODEL, "openai": OPENAI_MODEL, "statistical": "local-stats-v2"}
 
     return {
         "query":            req.query,
         "industry":         req.industry,
-        "provider":         provider if ai else "statistical",
-        "model":            ANTHROPIC_MODEL if ANTHROPIC_API_KEY else (OPENAI_MODEL if OPENAI_API_KEY else "local-stats-v2"),
+        "provider":         actual_provider,
+        "model":            model_map.get(actual_provider, "local-stats-v2"),
         "narrative":        ai.get("narrative", _statistical_narrative(df, req.industry, anomalies)),
         "metrics":          ai.get("metrics",   metrics),
         "insights":         ai.get("insights",  insights),
@@ -578,7 +588,7 @@ Forecasts: {json.dumps(forecasts)}
         "forecasts":        forecasts,
         "anomaly_details":  anomalies,
         "descriptive_stats": desc,
-        "pipeline_steps":   pipeline_steps(provider, elapsed),
+        "pipeline_steps":   pipeline_steps(actual_provider, elapsed),
         "execution_ms":     round(elapsed),
         "raw_data_preview": req.inline_data[:6],
     }
@@ -618,7 +628,7 @@ Respond in plain text — structured, clear paragraphs. No JSON."""
         f"Data rows: {len(df)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg, expect_json=False)
+    raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
 
     if not raw:
         raw = _audit_fallback(req.tool, tool_data)
@@ -627,7 +637,7 @@ Respond in plain text — structured, clear paragraphs. No JSON."""
         "response":    raw,
         "tool":        req.tool,
         "tool_data":   tool_data,
-        "provider":    detect_provider(),
+        "provider":    actual_provider,
         "execution_ms": round((time.time() - t0) * 1000),
     }
 
@@ -698,7 +708,7 @@ Respond in plain text — professional, specific, actionable."""
         f"Records analysed: {len(df)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg, expect_json=False)
+    raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
     if not raw:
         raw = _fraud_fallback(fraud_data)
 
@@ -707,7 +717,7 @@ Respond in plain text — professional, specific, actionable."""
         "fraud_data":  fraud_data,
         "risk_score":  fraud_data.get("risk_score", 0),
         "risk_level":  fraud_data.get("risk_level", "LOW"),
-        "provider":    detect_provider(),
+        "provider":    actual_provider,
         "execution_ms": round((time.time() - t0) * 1000),
     }
 
@@ -771,14 +781,14 @@ Respond in plain text — professional and specific."""
         f"Records: {len(df)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg, expect_json=False)
+    raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
     if not raw:
         raw = _tax_fallback(tax_data, req.tool)
 
     return {
         "response":    raw,
         "tax_data":    tax_data,
-        "provider":    detect_provider(),
+        "provider":    actual_provider,
         "execution_ms": round((time.time() - t0) * 1000),
     }
 
@@ -858,12 +868,12 @@ Return ONLY valid JSON:
 
     user_msg = f"Query: {req.query}\nSales KPIs: {json.dumps(sales_kpis)}\nAudit flags: {json.dumps(audit_flags[:4])}\nSample: {json.dumps(req.inline_data[:6], default=str)}"
 
-    raw = await call_ai(system_prompt, user_msg)
+    raw, actual_provider = await call_ai(system_prompt, user_msg)
     ai  = clean_json(raw)
 
     return {
         "query":        req.query,
-        "provider":     detect_provider() if ai else "statistical",
+        "provider":     actual_provider,
         "model":        ANTHROPIC_MODEL if ANTHROPIC_API_KEY else OPENAI_MODEL,
         "narrative":    ai.get("narrative", f"Sales audit complete. {len(df)} records analysed."),
         "metrics":      ai.get("metrics",   metrics),
@@ -914,12 +924,12 @@ Return ONLY valid JSON:
         f"Data sample: {json.dumps(req.inline_data[:6], default=str)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg)
+    raw, actual_provider = await call_ai(system_prompt, user_msg)
     ai  = clean_json(raw)
 
     return {
         "query":            req.query,
-        "provider":         detect_provider() if ai else "statistical",
+        "provider":         actual_provider,
         "narrative":        ai.get("narrative", _statistical_narrative(df, "finance", anomalies)),
         "metrics":          ai.get("metrics",   metrics),
         "insights":         ai.get("insights",  AE.build_insights(df, anomalies)),
@@ -971,14 +981,14 @@ Respond in plain text — technical, professional, IFRS-referenced."""
         f"Records: {len(df)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg, expect_json=False)
+    raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
     if not raw:
         raw = f"ACCOUNTING REVIEW — {len(df)} records\n\nJournal entry analysis complete. Anomalies: {len(accounting_data.get('anomalies', []))}. Review flagged entries against IFRS standards."
 
     return {
         "response":         raw,
         "accounting_data":  accounting_data,
-        "provider":         detect_provider(),
+        "provider":         actual_provider,
         "execution_ms":     round((time.time() - t0) * 1000),
     }
 
@@ -1026,12 +1036,12 @@ Return ONLY valid JSON:
         f"Data sample: {json.dumps(req.inline_data[:6], default=str)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg)
+    raw, actual_provider = await call_ai(system_prompt, user_msg)
     ai  = clean_json(raw)
 
     return {
         "query":        req.query,
-        "provider":     detect_provider() if ai else "statistical",
+        "provider":     actual_provider,
         "narrative":    ai.get("narrative", _statistical_narrative(df, "economics", anomalies)),
         "metrics":      ai.get("metrics",   metrics),
         "insights":     ai.get("insights",  AE.build_insights(df, anomalies)),
@@ -1114,12 +1124,12 @@ Return ONLY valid JSON:
         f"Data sample: {json.dumps(req.inline_data[:6], default=str)}"
     )
 
-    raw = await call_ai(system_prompt, user_msg)
+    raw, actual_provider = await call_ai(system_prompt, user_msg)
     ai  = clean_json(raw)
 
     return {
         "query":          req.query,
-        "provider":       detect_provider() if ai else "statistical",
+        "provider":       actual_provider,
         "narrative":      ai.get("narrative", _statistical_narrative(df, "warehouse", anomalies)),
         "metrics":        ai.get("metrics",   metrics),
         "insights":       ai.get("insights",  AE.build_insights(df, anomalies)),
@@ -1150,14 +1160,14 @@ Structure your response: Definition → How it works → Practical example → C
 
     user_msg = req.message
 
-    raw = await call_ai(system_prompt, user_msg, expect_json=False)
+    raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
 
     if not raw:
         raw = _explain_fallback(req.message)
 
     return {
         "response":    raw,
-        "provider":    detect_provider(),
+        "provider":    actual_provider,
         "execution_ms": round((time.time() - t0) * 1000),
     }
 
