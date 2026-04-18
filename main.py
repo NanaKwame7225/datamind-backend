@@ -352,13 +352,11 @@ async def analyse(req: AnalyseRequest):
     return _statistical_fallback(req)
 
 # ── Serve frontend (same-origin deployment) ────────────────────────────────
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
-if os.path.isdir(FRONTEND_DIR):
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+BASE_DIR = os.path.dirname(__file__)
 
-    @app.get("/")
-    async def serve_index():
-        idx = os.path.join(FRONTEND_DIR, "index.html")
-        if os.path.isfile(idx):
-            return FileResponse(idx)
-        raise HTTPException(status_code=404, detail="index.html not found in frontend/")
+@app.get("/")
+async def serve_index():
+    idx = os.path.join(BASE_DIR, "index.html")
+    if os.path.isfile(idx):
+        return FileResponse(idx)
+    raise HTTPException(status_code=404, detail="index.html not found")
