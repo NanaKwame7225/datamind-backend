@@ -446,15 +446,33 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
 
 
 def clean_json(raw: str) -> dict:
-    """Strip markdown fences and parse JSON safely."""
-    raw = raw.strip()
-    for fence in ["```json", "```JSON", "```"]:
-        raw = raw.replace(fence, "")
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except Exception:
+    """Strip markdown fences and parse JSON safely — multiple strategies."""
+    if not raw:
         return {}
+
+    # Strategy 1: strip fences and parse
+    cleaned = raw.strip()
+    for fence in ["```json", "```JSON", "```"]:
+        cleaned = cleaned.replace(fence, "")
+    cleaned = cleaned.strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # Strategy 2: find first { ... } block
+    try:
+        start = cleaned.index("{")
+        end   = cleaned.rindex("}") + 1
+        return json.loads(cleaned[start:end])
+    except Exception:
+        pass
+
+    # Strategy 3: if raw is plain text (not JSON), wrap it as narrative
+    if len(raw.strip()) > 50:
+        return {"narrative": raw.strip(), "metrics": [], "insights": [], "charts": []}
+
+    return {}
 
 
 def detect_provider() -> str:
@@ -544,26 +562,21 @@ async def data_agent(req: DataRequest):
         for col in nk[:2]:
             forecasts[col] = AE.forecast(df[col].dropna(), 3)
 
-    system_prompt = f"""You are DataMind Elite, an expert AI data auditor and analyst for the {req.industry} sector.
-Return ONLY valid JSON — no markdown fences, no preamble.
+    system_prompt = f"""You are DataMind Elite, an expert AI data auditor for the {req.industry} sector.
 
-JSON shape:
-{{
-  "narrative": "Rich multi-paragraph audit narrative. Use **Heading** markers. Min 5 paragraphs: Executive Summary, Data Quality, Key Findings, Risk Assessment, Recommendations.",
-  "metrics": [{{"label":"","value":"","change_pct":0,"trend":"up|down|flat","description":""}}],
-  "insights": [{{"title":"","body":"","severity":"critical|warning|info","source":""}}],
-  "charts": []
-}}
+CRITICAL: Respond with ONLY a raw JSON object. No markdown. No backticks. No explanation. Start your response with {{ and end with }}.
 
-Industry: {req.industry}
-Records: {len(df)}
-Numeric fields: {", ".join(nk)}
-Descriptive stats: {json.dumps(desc, default=str)[:600]}
-Financial ratios: {json.dumps(ratios)}
-Anomalies detected: {json.dumps(anomalies[:4], default=str)}
-Correlation highlights: {json.dumps({k: v for k, v in list(corr.items())[:2]}, default=str)[:300]}
-Forecasts: {json.dumps(forecasts)}
-"""
+Required JSON structure:
+{{"narrative":"5-paragraph audit narrative using **Heading** markers for: Executive Summary, Data Quality, Key Findings, Risk Assessment, Recommendations. Reference the actual data values provided.","metrics":[{{"label":"string","value":"string","change_pct":0,"trend":"up|down|flat","description":"string"}}],"insights":[{{"title":"string","body":"string","severity":"critical|warning|info","source":"string"}}],"charts":[]}}
+
+Context:
+- Industry: {req.industry}
+- Records analysed: {len(df)}
+- Numeric fields: {", ".join(nk)}
+- Key stats: {json.dumps(desc, default=str)[:400]}
+- Financial ratios: {json.dumps(ratios)}
+- Anomalies found: {json.dumps(anomalies[:3], default=str)}
+- Forecasts: {json.dumps(forecasts)}"""
 
     user_msg = f"Query: {req.query}\nData sample: {json.dumps(req.inline_data[:8], default=str)}"
 
@@ -624,8 +637,10 @@ Respond in plain text — structured, clear paragraphs. No JSON."""
         f"Tool: {req.tool or 'general'}\n"
         f"Query: {req.message}\n"
         f"Industry: {req.industry}\n"
+        f"Records: {len(df)}\n"
         f"Tool results: {json.dumps(tool_data, default=str)}\n"
-        f"Data rows: {len(df)}"
+        f"Data sample: {json.dumps(req.data[:10], default=str) if req.data else 'No data uploaded'}\n"
+        f"Numeric fields: {', '.join(AE.numeric_cols(df)) if not df.empty else 'none'}"
     )
 
     raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
@@ -704,8 +719,10 @@ Respond in plain text — professional, specific, actionable."""
     user_msg = (
         f"Fraud tool: {req.tool or 'full_scan'}\n"
         f"Query: {req.message}\n"
+        f"Industry: {req.industry}\n"
+        f"Records analysed: {len(df)}\n"
         f"Fraud analytics: {json.dumps(fraud_data, default=str)}\n"
-        f"Records analysed: {len(df)}"
+        f"Data sample: {json.dumps(req.data[:10], default=str) if req.data else 'No data uploaded'}"
     )
 
     raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
@@ -777,8 +794,10 @@ Respond in plain text — professional and specific."""
     user_msg = (
         f"Tax tool: {req.tool or 'full_computation'}\n"
         f"Query: {req.message}\n"
+        f"Industry: {req.industry}\n"
+        f"Records: {len(df)}\n"
         f"Computed tax data: {json.dumps(tax_data, default=str)}\n"
-        f"Records: {len(df)}"
+        f"Data sample: {json.dumps(req.data[:10], default=str) if req.data else 'No data uploaded'}"
     )
 
     raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
@@ -977,8 +996,10 @@ Respond in plain text — technical, professional, IFRS-referenced."""
     user_msg = (
         f"Tool: {req.tool or 'full_review'}\n"
         f"Query: {req.message}\n"
+        f"Industry: {req.industry}\n"
+        f"Records: {len(df)}\n"
         f"Accounting data: {json.dumps(accounting_data, default=str)}\n"
-        f"Records: {len(df)}"
+        f"Data sample: {json.dumps(req.data[:10], default=str) if req.data else 'No data uploaded'}"
     )
 
     raw, actual_provider = await call_ai(system_prompt, user_msg, expect_json=False)
