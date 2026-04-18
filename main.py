@@ -46,8 +46,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # ── Environment ────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
 ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-5")
 OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # ── Base Schemas ───────────────────────────────────────────────────────────
 class DataRequest(BaseModel):
@@ -333,9 +337,9 @@ AE = AnalyticsEngine()
 # ══════════════════════════════════════════════════════════════════════════
 
 async def call_ai(system_prompt: str, user_message: str, expect_json: bool = True) -> str:
-    """Call Claude first, then OpenAI, return raw text response."""
+    """Call Claude → Gemini → OpenAI in cascade. Statistical is last resort."""
 
-    # Claude
+    # 1. Claude
     if ANTHROPIC_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -346,12 +350,34 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                           "messages": [{"role": "user", "content": user_message}]},
                 )
             if resp.status_code == 200:
+                log.info("Claude responded successfully")
                 return resp.json()["content"][0]["text"].strip()
-            log.warning("Claude HTTP %s: %s", resp.status_code, resp.text[:100])
+            log.warning("Claude HTTP %s — trying Gemini", resp.status_code)
         except Exception as e:
-            log.warning("Claude error: %s", e)
+            log.warning("Claude error: %s — trying Gemini", e)
 
-    # OpenAI
+    # 2. Gemini
+    if GEMINI_API_KEY:
+        try:
+            combined = f"{system_prompt}\n\n{user_message}"
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+            )
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    url,
+                    json={"contents": [{"parts": [{"text": combined}]}],
+                          "generationConfig": {"maxOutputTokens": 2500}},
+                )
+            if resp.status_code == 200:
+                log.info("Gemini responded successfully")
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            log.warning("Gemini HTTP %s — trying OpenAI", resp.status_code)
+        except Exception as e:
+            log.warning("Gemini error: %s — trying OpenAI", e)
+
+    # 3. OpenAI
     if OPENAI_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -364,12 +390,15 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
                     ]},
                 )
             if resp.status_code == 200:
+                log.info("OpenAI responded successfully")
                 return resp.json()["choices"][0]["message"]["content"].strip()
-            log.warning("OpenAI HTTP %s: %s", resp.status_code, resp.text[:100])
+            log.warning("OpenAI HTTP %s — falling back to statistical", resp.status_code)
         except Exception as e:
-            log.warning("OpenAI error: %s", e)
+            log.warning("OpenAI error: %s — falling back to statistical", e)
 
-    return ""  # fallback handled by caller
+    # 4. Statistical — only if ALL AI engines fail
+    log.warning("All AI engines failed — using statistical fallback")
+    return ""
 
 
 def clean_json(raw: str) -> dict:
@@ -385,8 +414,11 @@ def clean_json(raw: str) -> dict:
 
 
 def detect_provider() -> str:
+    """Returns the first available AI provider for labelling purposes."""
     if ANTHROPIC_API_KEY:
         return "anthropic"
+    if GEMINI_API_KEY:
+        return "gemini"
     if OPENAI_API_KEY:
         return "openai"
     return "statistical"
@@ -413,6 +445,7 @@ async def health():
         "version":   "2.0.0",
         "engines":   {
             "claude":      bool(ANTHROPIC_API_KEY),
+            "gemini":      bool(GEMINI_API_KEY),
             "openai":      bool(OPENAI_API_KEY),
             "statistical": True,
             "pandas":      True,
@@ -420,6 +453,7 @@ async def health():
             "scipy":       True,
             "sklearn":     True,
         },
+        "cascade": "Claude → Gemini → OpenAI → Statistical",
     }
 
 # ── Serve frontend ─────────────────────────────────────────────────────────
