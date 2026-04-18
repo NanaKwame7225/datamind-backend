@@ -344,45 +344,10 @@ AE = AnalyticsEngine()
 async def call_ai(system_prompt: str, user_message: str, expect_json: bool = True) -> str:
     """
     6-engine AI cascade:
-    Claude → Gemini → Groq → Mistral → OpenAI → Statistical (offline only)
+    Groq → Mistral → Gemini → Claude → OpenAI → Statistical (offline only)
     """
 
-    # 1. Claude
-    if ANTHROPIC_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                    json={"model": ANTHROPIC_MODEL, "max_tokens": 2500, "system": system_prompt,
-                          "messages": [{"role": "user", "content": user_message}]},
-                )
-            if resp.status_code == 200:
-                log.info("✓ Claude responded")
-                return resp.json()["content"][0]["text"].strip()
-            log.warning("Claude %s — trying Gemini", resp.status_code)
-        except Exception as e:
-            log.warning("Claude error: %s — trying Gemini", e)
-
-    # 2. Gemini
-    if GEMINI_API_KEY:
-        try:
-            combined = f"{system_prompt}\n\n{user_message}"
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    url,
-                    json={"contents": [{"parts": [{"text": combined}]}],
-                          "generationConfig": {"maxOutputTokens": 2500}},
-                )
-            if resp.status_code == 200:
-                log.info("✓ Gemini responded")
-                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            log.warning("Gemini %s — trying Groq", resp.status_code)
-        except Exception as e:
-            log.warning("Gemini error: %s — trying Groq", e)
-
-    # 3. Groq (LLaMA 3.3 70B — fastest free API)
+    # 1. Groq (LLaMA 3.3 70B — fastest free API, runs first)
     if GROQ_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -401,7 +366,7 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
         except Exception as e:
             log.warning("Groq error: %s — trying Mistral", e)
 
-    # 4. Mistral
+    # 2. Mistral
     if MISTRAL_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
@@ -416,9 +381,44 @@ async def call_ai(system_prompt: str, user_message: str, expect_json: bool = Tru
             if resp.status_code == 200:
                 log.info("✓ Mistral responded")
                 return resp.json()["choices"][0]["message"]["content"].strip()
-            log.warning("Mistral %s — trying OpenAI", resp.status_code)
+            log.warning("Mistral %s — trying Gemini", resp.status_code)
         except Exception as e:
-            log.warning("Mistral error: %s — trying OpenAI", e)
+            log.warning("Mistral error: %s — trying Gemini", e)
+
+    # 3. Gemini
+    if GEMINI_API_KEY:
+        try:
+            combined = f"{system_prompt}\n\n{user_message}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    url,
+                    json={"contents": [{"parts": [{"text": combined}]}],
+                          "generationConfig": {"maxOutputTokens": 2500}},
+                )
+            if resp.status_code == 200:
+                log.info("✓ Gemini responded")
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            log.warning("Gemini %s — trying Claude", resp.status_code)
+        except Exception as e:
+            log.warning("Gemini error: %s — trying Claude", e)
+
+    # 4. Claude
+    if ANTHROPIC_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": ANTHROPIC_MODEL, "max_tokens": 2500, "system": system_prompt,
+                          "messages": [{"role": "user", "content": user_message}]},
+                )
+            if resp.status_code == 200:
+                log.info("✓ Claude responded")
+                return resp.json()["content"][0]["text"].strip()
+            log.warning("Claude %s — trying OpenAI", resp.status_code)
+        except Exception as e:
+            log.warning("Claude error: %s — trying OpenAI", e)
 
     # 5. OpenAI
     if OPENAI_API_KEY:
@@ -458,10 +458,10 @@ def clean_json(raw: str) -> dict:
 
 def detect_provider() -> str:
     """Returns the first available AI provider for labelling purposes."""
-    if ANTHROPIC_API_KEY: return "anthropic"
-    if GEMINI_API_KEY:    return "gemini"
     if GROQ_API_KEY:      return "groq"
     if MISTRAL_API_KEY:   return "mistral"
+    if GEMINI_API_KEY:    return "gemini"
+    if ANTHROPIC_API_KEY: return "anthropic"
     if OPENAI_API_KEY:    return "openai"
     return "statistical"
 
@@ -497,7 +497,7 @@ async def health():
             "scipy":       True,
             "sklearn":     True,
         },
-        "cascade": "Claude → Gemini → Groq → Mistral → OpenAI → Statistical",
+        "cascade": "Groq → Mistral → Gemini → Claude → OpenAI → Statistical",
     }
 
 # ── Serve frontend ─────────────────────────────────────────────────────────
@@ -1183,8 +1183,9 @@ def _statistical_narrative(df: pd.DataFrame, industry: str, anomalies: list) -> 
         f"**Risk Assessment**\n\nStatistical screening complete. "
         f"{'Data integrity appears sound.' if not crit else 'Flagged records require manual auditor review.'} "
         f"Supporting documentation should be retained per ISA 230.\n\n"
-        f"**Recommendations**\n\nConnect an AI API key (Anthropic or OpenAI) for a full narrative analysis. "
-        f"All statistical computations above are production-grade and audit-ready."
+        f"**Recommendations**\n\nManagement should review all flagged metrics against prior-period benchmarks and "
+        f"{iname} sector norms. Where anomalies have been detected, obtain corroborating source records "
+        f"before closing the audit period. All statistical computations are production-grade and audit-ready."
     )
 
 def _audit_fallback(tool: str, data: dict) -> str:
